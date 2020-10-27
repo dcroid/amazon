@@ -1,5 +1,8 @@
 import re
 import json
+import time
+from datetime import datetime
+
 from weblib.error import DataNotFound
 from grab.spider import Spider, Task
 
@@ -7,6 +10,9 @@ from grab.spider import Spider, Task
 class AmazonProduct:
 
     grab = None
+    asin = None
+    url = None
+    brand = ''
 
     def title(self):
         try:
@@ -27,11 +33,6 @@ class AmazonProduct:
             return int(cnt[0])
         return 0
 
-    def brand(self):
-        #fixs
-        # return self.grab.doc('id("bylineInfo")').text()
-        return ''
-
     def price_current(self):
         price = self.grab.doc('//span[@class="a-size-medium a-color-price priceBlockBuyingPriceString"]')\
             .text(default='0.0').replace(",", ".").replace("$", "").replace("€", "").strip()
@@ -41,7 +42,6 @@ class AmazonProduct:
         price = self.grab.doc('//span[@class="priceBlockStrikePriceString a-text-strike"]').text(default='0.0')\
             .replace(",", ".").replace("$", "").replace("€", "").strip()
         return float(price)
-
 
     def section(self):
         return self.grab.doc('//li/span[@class="a-list-item"]/a[@class="a-link-normal a-color-tertiary"]').text_list()
@@ -65,10 +65,19 @@ class AmazonProduct:
         cat = self.grab.doc(f'{xpath}[1]').text_list()
         cat = [res.replace(' :', '') for res in cat]
         value = self.grab.doc(f'{xpath}[2]').text_list()
-        result = list(zip(cat, value))
+        return AmazonProduct.splitter(cat, value)
 
-        no_li = self.grab.doc('id("detailBulletsWrapper_feature_div")/ul[@class="a-unordered-list a-nostyle '
-                              'a-vertical a-spacing-none detail-bullet-list"]/li').text_list()
+    def product_overview(self):
+        cat = self.grab.doc('//td[@class="a-span3"]/span').text_list()
+        value = self.grab.doc('//td[@class="a-span9"]/span').text_list()
+        result = AmazonProduct.splitter(cat, value)
+        self.brand = result.get('Brand', '')
+        return AmazonProduct.splitter(cat, value)
+
+    @staticmethod
+    def splitter(cat, value):
+        result = list(zip(cat, value))
+        result = {param[0]: param[1] for param in result}
         return result
 
     def video(self):
@@ -82,10 +91,11 @@ class AmazonProduct:
             return []
 
     @classmethod
-    def get(cls, grab, url):
+    def get(cls, grab, url, asin):
         item = cls()
         item.grab = grab
         item.url = url
+        item.asin = asin
         return item.director()
 
     def director(self):
@@ -105,12 +115,14 @@ class AmazonProduct:
             stock = True
 
         result = {
+            'timestamp': str(datetime.fromtimestamp(int(time.time()))),
+            'RPC': self.asin,
+            'url': self.url,
             'title': self.title(),
             'stock': {
                 'in_stock': stock,
                 'count': cnt_stock
             },
-            'brand': self.brand(),
             'price_data': {
                 'original': price_orig,
                 'current': price_current,
@@ -122,9 +134,13 @@ class AmazonProduct:
                 'set_images': self.set_images(),
                 'video': self.video(),
             },
-            'details': self.details()
+            'metadata': {
+                '__description': self.description(),
+                **self.details(),
+                **self.product_overview()
+            },
+            'brand': self.brand,
         }
-        print(json.dumps(result, indent=4, sort_keys=True))
         return result
 
 
@@ -164,9 +180,9 @@ class AmazonSpider(Spider):
         items_xpath = '//div[@data-component-type="s-search-result"]'
         asins = grab.doc(items_xpath).attr_list('data-asin')
         for asin in asins:
-            yield Task('item_page', url=f"{self.main_url}/-/dp/{asin}/")
+            yield Task('item_page', url=f"{self.main_url}/-/dp/{asin}/", asin=asin)
 
     def task_item_page(self, grab, task):
-        item = self.product.get(grab, task.url)
+        item = self.product.get(grab, task.url, task.asin)
         self.product_list.append(item)
 
